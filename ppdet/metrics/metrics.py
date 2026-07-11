@@ -90,7 +90,7 @@ class COCOMetric(Metric):
                     "anno_file {} not a file".format(anno_file)
 
         if self.output_eval is not None:
-            Path(self.output_eval).mkdir(exist_ok=True)
+            Path(self.output_eval).mkdir(parents=True, exist_ok=True)
 
         self.save_threshold = kwargs.get('save_threshold', 0)
 
@@ -245,7 +245,7 @@ class LVISMetric(Metric):
                     "anno_file {} not a file".format(anno_file)
 
         if self.output_eval is not None:
-            Path(self.output_eval).mkdir(exist_ok=True)
+            Path(self.output_eval).mkdir(parents=True, exist_ok=True)
 
         self.reset()
 

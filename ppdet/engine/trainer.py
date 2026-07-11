@@ -92,7 +92,7 @@ class Trainer(object):
                 except:
                     pass
             if not os.path.exists(self.cfg.save_dir):
-                os.mkdir(self.cfg.save_dir)
+                os.makedirs(self.cfg.save_dir, exist_ok=True)
             with open(os.path.join(self.cfg.save_dir, "config.yaml"), "w") as f:
                 config_dict = convert_to_dict(self.cfg)
                 config_dict = {k: v for k, v in config_dict.items() if v != {}}

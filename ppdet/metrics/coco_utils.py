@@ -18,6 +18,8 @@ from __future__ import print_function
 
 import os
 import sys
+import io
+import contextlib
 import numpy as np
 import itertools
 
@@ -125,7 +127,16 @@ def cocoapi_eval(jsonfile,
         coco_eval = COCOeval(coco_gt, coco_dt, style)
     coco_eval.evaluate()
     coco_eval.accumulate()
-    coco_eval.summarize()
+    summary_buffer = io.StringIO()
+    with contextlib.redirect_stdout(summary_buffer):
+        coco_eval.summarize()
+    summary_text = summary_buffer.getvalue()
+    print(summary_text, end='')
+
+    metric_file = os.path.splitext(jsonfile)[0] + '_metrics.txt'
+    with open(metric_file, 'w', encoding='utf-8') as f:
+        f.write(summary_text)
+    logger.info("COCO evaluation metrics saved to {}.".format(metric_file))
     if classwise:
         # Compute per-category AP and PR curve
         try:
