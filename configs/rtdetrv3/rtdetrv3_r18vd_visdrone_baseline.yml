@@ -1,0 +1,79 @@
+﻿_BASE_: [
+  '../datasets/visdrone2019_detection.yml',
+  '../runtime.yml',
+  '_base_/optimizer_6x.yml',
+  '_base_/rtdetrv3_r50vd.yml',
+  '_base_/rtdetr_reader.yml',
+]
+
+weights: output/rtdetrv3_r18vd_visdrone_baseline/model_final
+save_dir: output/rtdetrv3_r18vd_visdrone_baseline
+output_eval: output/rtdetrv3_r18vd_visdrone_baseline/eval
+find_unused_parameters: True
+log_iter: 100
+snapshot_epoch: 1
+
+epoch: 24
+
+o2m_branch: True
+num_queries_o2m: 450
+
+pretrain_weights: https://paddledet.bj.bcebos.com/models/pretrained/ResNet18_vd_pretrained.pdparams
+
+TrainReader:
+  batch_size: 2
+
+EvalReader:
+  batch_size: 1
+
+LearningRate:
+  base_lr: 0.00005
+  schedulers:
+  - !PiecewiseDecay
+    gamma: 1.0
+    milestones: [100]
+    use_warmup: true
+  - !LinearWarmup
+    start_factor: 0.001
+    steps: 500
+
+PPYOLOEHead:
+  static_assigner_epoch: 1
+
+RTDETRV3:
+  backbone: ResNet
+  neck: HybridEncoder
+  transformer: RTDETRTransformerv3
+  detr_head: DINOv3Head
+  aux_o2m_head: PPYOLOEHead
+  post_process: DETRPostProcess
+
+ResNet:
+  depth: 18
+  variant: d
+  return_idx: [1, 2, 3]
+  freeze_at: -1
+  freeze_norm: false
+  norm_decay: 0.
+
+HybridEncoder:
+  hidden_dim: 256
+  use_encoder_idx: [2]
+  num_encoder_layers: 1
+  encoder_layer:
+    name: TransformerLayer
+    d_model: 256
+    nhead: 8
+    dim_feedforward: 1024
+    dropout: 0.
+    activation: 'gelu'
+  expansion: 0.5
+  depth_mult: 1.0
+
+RTDETRTransformerv3:
+  eval_idx: -1
+  num_decoder_layers: 3
+  num_noises: 3
+  num_noise_queries: [300, 300, 300]
+  num_noise_denoising: 100
+  learnt_init_query: False
