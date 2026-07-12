@@ -41,7 +41,7 @@ from ppdet.slim import build_slim_model
 
 from ppdet.utils.cli import ArgsParser, merge_args
 import ppdet.utils.check as check
-from ppdet.utils.logger import setup_logger
+from ppdet.utils.logger import setup_logger, set_logger_output
 logger = setup_logger('train')
 
 
@@ -198,6 +198,9 @@ def main():
 
     # FIXME: Temporarily solve the priority problem of FLAGS.opt
     merge_config(FLAGS.opt)
+    train_log = os.path.join(cfg.save_dir, 'train.log')
+    set_logger_output(train_log)
+    logger.info('Training log will be saved to {}'.format(train_log))
     check.check_config(cfg)
     check.check_gpu(cfg.use_gpu)
     check.check_npu(cfg.use_npu)

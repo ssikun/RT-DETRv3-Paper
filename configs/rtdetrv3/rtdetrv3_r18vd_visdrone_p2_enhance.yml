@@ -1,0 +1,14 @@
+_BASE_: [
+  'rtdetrv3_r18vd_visdrone_baseline.yml',
+]
+
+weights: output/rtdetrv3_r18vd_visdrone_p2_enhance/model_final
+save_dir: output/rtdetrv3_r18vd_visdrone_p2_enhance
+output_eval: output/rtdetrv3_r18vd_visdrone_p2_enhance/eval
+
+ResNet:
+  return_idx: [0, 1, 2, 3]
+
+HybridEncoder:
+  use_p2_guidance: True
+  p2_guidance_dim: 64

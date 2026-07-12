@@ -26,7 +26,7 @@ from ..layers import MultiHeadAttention
 from paddle import ParamAttr
 from paddle.regularizer import L2Decay
 
-__all__ = ['HybridEncoder', 'MaskHybridEncoder']
+__all__ = ['HybridEncoder', 'MaskHybridEncoder', 'P2GuidedFeatureEnhancer']
 
 
 class CSPRepLayer(nn.Layer):
@@ -64,6 +64,33 @@ class CSPRepLayer(nn.Layer):
         x_1 = self.bottlenecks(x_1)
         x_2 = self.conv2(x)
         return self.conv3(x_1 + x_2)
+
+
+class P2GuidedFeatureEnhancer(nn.Layer):
+    def __init__(self,
+                 p2_channels,
+                 p3_channels,
+                 guide_channels=64,
+                 act='silu'):
+        super(P2GuidedFeatureEnhancer, self).__init__()
+        self.p2_reduce = BaseConv(p2_channels, guide_channels, 1, 1, act=act)
+        self.p3_align = BaseConv(p3_channels, guide_channels, 1, 1, act=act)
+        self.spatial_attn = nn.Sequential(
+            nn.Conv2D(guide_channels, 1, kernel_size=1), nn.Sigmoid())
+        self.channel_attn = nn.Sequential(
+            nn.AdaptiveAvgPool2D(1),
+            nn.Conv2D(guide_channels, guide_channels, kernel_size=1),
+            nn.Sigmoid())
+        self.fuse = BaseConv(
+            guide_channels * 2, p3_channels, 3, 1, act=act)
+
+    def forward(self, p2_feat, p3_feat):
+        guide = self.p2_reduce(p2_feat)
+        guide = guide * self.spatial_attn(guide) * self.channel_attn(guide)
+        p3_h, p3_w = p3_feat.shape[2:]
+        guide = F.interpolate(guide, size=[p3_h, p3_w], mode='nearest')
+        p3_aligned = self.p3_align(p3_feat)
+        return self.fuse(paddle.concat([p3_aligned, guide], axis=1))
 
 
 @register
@@ -142,7 +169,10 @@ class HybridEncoder(nn.Layer):
                  depth_mult=1.0,
                  act='silu',
                  trt=False,
-                 eval_size=None):
+                 eval_size=None,
+                 use_p2_guidance=False,
+                 p2_guidance_channels=None,
+                 p2_guidance_dim=64):
         super(HybridEncoder, self).__init__()
         self.in_channels = in_channels
         self.feat_strides = feat_strides
@@ -151,6 +181,12 @@ class HybridEncoder(nn.Layer):
         self.num_encoder_layers = num_encoder_layers
         self.pe_temperature = pe_temperature
         self.eval_size = eval_size
+        self.use_p2_guidance = use_p2_guidance
+        self.p2_guidance_channels = p2_guidance_channels
+        self.p2_guidance_dim = p2_guidance_dim
+        if self.use_p2_guidance:
+            assert self.p2_guidance_channels is not None, (
+                'p2_guidance_channels must be set when use_p2_guidance=True')
 
         # channel projection
         self.input_proj = nn.LayerList()
@@ -172,6 +208,15 @@ class HybridEncoder(nn.Layer):
         act = get_act_fn(
             act, trt=trt) if act is None or isinstance(act,
                                                        (str, dict)) else act
+
+        self.p2_enhancer = None
+        if self.use_p2_guidance:
+            self.p2_enhancer = P2GuidedFeatureEnhancer(
+                self.p2_guidance_channels,
+                self.in_channels[0],
+                guide_channels=self.p2_guidance_dim,
+                act=act)
+
         # top-down fpn
         self.lateral_convs = nn.LayerList()
         self.fpn_blocks = nn.LayerList()
@@ -238,7 +283,12 @@ class HybridEncoder(nn.Layer):
             axis=1)[None, :, :]
 
     def forward(self, feats, for_mot=False, is_teacher=False):
-        assert len(feats) == len(self.in_channels)
+        if self.use_p2_guidance:
+            assert len(feats) == len(self.in_channels) + 1
+            p2_feat, feats = feats[0], feats[1:]
+            feats[0] = self.p2_enhancer(p2_feat, feats[0])
+        else:
+            assert len(feats) == len(self.in_channels)
         # get projection features
         proj_feats = [self.input_proj[i](feat) for i, feat in enumerate(feats)]
         # encoder
@@ -286,6 +336,14 @@ class HybridEncoder(nn.Layer):
 
     @classmethod
     def from_config(cls, cfg, input_shape):
+        if cfg.get('use_p2_guidance', False):
+            assert len(input_shape) >= 2, (
+                'use_p2_guidance=True requires P2 plus P3/P4/P5 features')
+            return {
+                'p2_guidance_channels': input_shape[0].channels,
+                'in_channels': [i.channels for i in input_shape[1:]],
+                'feat_strides': [i.stride for i in input_shape[1:]]
+            }
         return {
             'in_channels': [i.channels for i in input_shape],
             'feat_strides': [i.stride for i in input_shape]
