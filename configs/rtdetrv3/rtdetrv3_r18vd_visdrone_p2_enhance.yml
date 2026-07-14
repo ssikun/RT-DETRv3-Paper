@@ -12,3 +12,4 @@ ResNet:
 HybridEncoder:
   use_p2_guidance: True
   p2_guidance_dim: 64
+  p2_residual_init: 0.1

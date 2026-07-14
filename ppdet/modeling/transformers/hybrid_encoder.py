@@ -71,6 +71,7 @@ class P2GuidedFeatureEnhancer(nn.Layer):
                  p2_channels,
                  p3_channels,
                  guide_channels=64,
+                 residual_init=0.1,
                  act='silu'):
         super(P2GuidedFeatureEnhancer, self).__init__()
         self.p2_reduce = BaseConv(p2_channels, guide_channels, 1, 1, act=act)
@@ -83,6 +84,9 @@ class P2GuidedFeatureEnhancer(nn.Layer):
             nn.Sigmoid())
         self.fuse = BaseConv(
             guide_channels * 2, p3_channels, 3, 1, act=act)
+        self.alpha = self.create_parameter(
+            shape=[1],
+            default_initializer=nn.initializer.Constant(value=residual_init))
 
     def forward(self, p2_feat, p3_feat):
         guide = self.p2_reduce(p2_feat)
@@ -90,7 +94,8 @@ class P2GuidedFeatureEnhancer(nn.Layer):
         p3_h, p3_w = p3_feat.shape[2:]
         guide = F.interpolate(guide, size=[p3_h, p3_w], mode='nearest')
         p3_aligned = self.p3_align(p3_feat)
-        return self.fuse(paddle.concat([p3_aligned, guide], axis=1))
+        enhance = self.fuse(paddle.concat([p3_aligned, guide], axis=1))
+        return p3_feat + self.alpha * enhance
 
 
 @register
@@ -172,7 +177,8 @@ class HybridEncoder(nn.Layer):
                  eval_size=None,
                  use_p2_guidance=False,
                  p2_guidance_channels=None,
-                 p2_guidance_dim=64):
+                 p2_guidance_dim=64,
+                 p2_residual_init=0.1):
         super(HybridEncoder, self).__init__()
         self.in_channels = in_channels
         self.feat_strides = feat_strides
@@ -184,6 +190,7 @@ class HybridEncoder(nn.Layer):
         self.use_p2_guidance = use_p2_guidance
         self.p2_guidance_channels = p2_guidance_channels
         self.p2_guidance_dim = p2_guidance_dim
+        self.p2_residual_init = p2_residual_init
         if self.use_p2_guidance:
             assert self.p2_guidance_channels is not None, (
                 'p2_guidance_channels must be set when use_p2_guidance=True')
@@ -215,6 +222,7 @@ class HybridEncoder(nn.Layer):
                 self.p2_guidance_channels,
                 self.in_channels[0],
                 guide_channels=self.p2_guidance_dim,
+                residual_init=self.p2_residual_init,
                 act=act)
 
         # top-down fpn
