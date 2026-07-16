@@ -75,12 +75,23 @@ class P2GuidedFeatureEnhancer(nn.Layer):
                  act='silu'):
         super(P2GuidedFeatureEnhancer, self).__init__()
         self.p2_reduce = BaseConv(p2_channels, guide_channels, 1, 1, act=act)
+        self.p2_downsample = nn.Sequential(
+            BaseConv(
+                guide_channels,
+                guide_channels,
+                3,
+                2,
+                groups=guide_channels,
+                act=act),
+            BaseConv(guide_channels, guide_channels, 1, 1, act=act))
         self.p3_align = BaseConv(p3_channels, guide_channels, 1, 1, act=act)
-        self.spatial_attn = nn.Sequential(
-            nn.Conv2D(guide_channels, 1, kernel_size=1), nn.Sigmoid())
         self.channel_attn = nn.Sequential(
             nn.AdaptiveAvgPool2D(1),
             nn.Conv2D(guide_channels, guide_channels, kernel_size=1),
+            nn.Sigmoid())
+        self.spatial_gate = nn.Sequential(
+            BaseConv(guide_channels * 2, guide_channels, 3, 1, act=act),
+            nn.Conv2D(guide_channels, 1, kernel_size=1),
             nn.Sigmoid())
         self.fuse = BaseConv(
             guide_channels * 2, p3_channels, 3, 1, act=act)
@@ -89,14 +100,16 @@ class P2GuidedFeatureEnhancer(nn.Layer):
             default_initializer=nn.initializer.Constant(value=residual_init))
 
     def forward(self, p2_feat, p3_feat):
-        guide = self.p2_reduce(p2_feat)
-        guide = guide * self.spatial_attn(guide) * self.channel_attn(guide)
+        guide = self.p2_downsample(self.p2_reduce(p2_feat))
         p3_h, p3_w = p3_feat.shape[2:]
-        guide = F.interpolate(guide, size=[p3_h, p3_w], mode='nearest')
+        if guide.shape[2] != p3_h or guide.shape[3] != p3_w:
+            guide = F.interpolate(guide, size=[p3_h, p3_w], mode='nearest')
+        guide = guide * self.channel_attn(guide)
         p3_aligned = self.p3_align(p3_feat)
-        enhance = self.fuse(paddle.concat([p3_aligned, guide], axis=1))
-        return p3_feat + self.alpha * enhance
-
+        fused = paddle.concat([p3_aligned, guide], axis=1)
+        gate = self.spatial_gate(fused)
+        enhance = self.fuse(fused)
+        return p3_feat + self.alpha * gate * enhance
 
 @register
 class TransformerLayer(nn.Layer):
