@@ -1,0 +1,15 @@
+_BASE_: [
+  'rtdetrv3_r18vd_visdrone_p2_enhance.yml',
+]
+
+weights: output/rtdetrv3_r18vd_visdrone_p2_balance/model_final
+save_dir: output/rtdetrv3_r18vd_visdrone_p2_balance
+output_eval: output/rtdetrv3_r18vd_visdrone_p2_balance/eval
+
+HybridEncoder:
+  use_p2_guidance: True
+  p2_guidance_dim: 64
+  p2_residual_init: 0.1
+  use_scale_balance: True
+  scale_balance_reduction: 4
+  scale_balance_init: 0.1

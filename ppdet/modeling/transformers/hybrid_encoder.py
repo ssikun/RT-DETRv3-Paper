@@ -26,7 +26,10 @@ from ..layers import MultiHeadAttention
 from paddle import ParamAttr
 from paddle.regularizer import L2Decay
 
-__all__ = ['HybridEncoder', 'MaskHybridEncoder', 'P2GuidedFeatureEnhancer']
+__all__ = [
+    'HybridEncoder', 'MaskHybridEncoder', 'P2GuidedFeatureEnhancer',
+    'SemanticScaleBalancer'
+]
 
 
 class CSPRepLayer(nn.Layer):
@@ -111,6 +114,42 @@ class P2GuidedFeatureEnhancer(nn.Layer):
         enhance = self.fuse(fused)
         return p3_feat + self.alpha * gate * enhance
 
+class SemanticScaleBalancer(nn.Layer):
+    def __init__(self,
+                 channels,
+                 num_scales=3,
+                 reduction=4,
+                 balance_init=0.1):
+        super(SemanticScaleBalancer, self).__init__()
+        hidden_channels = max(channels // reduction, 16)
+        self.context_reduce = nn.Conv2D(
+            channels, hidden_channels, kernel_size=1)
+        self.scale_gates = nn.LayerList([
+            nn.Conv2D(
+                hidden_channels,
+                channels,
+                kernel_size=1,
+                weight_attr=ParamAttr(
+                    initializer=nn.initializer.Constant(0.0)),
+                bias_attr=ParamAttr(
+                    initializer=nn.initializer.Constant(0.0)))
+            for _ in range(num_scales)
+        ])
+        self.beta = self.create_parameter(
+            shape=[num_scales, 1, 1, 1],
+            default_initializer=nn.initializer.Constant(value=balance_init))
+
+    def forward(self, feats):
+        context = F.adaptive_avg_pool2d(feats[-1], output_size=1)
+        context = self.context_reduce(context)
+        context = context * F.sigmoid(context)
+
+        outs = []
+        for idx, feat in enumerate(feats):
+            gate = 2.0 * F.sigmoid(self.scale_gates[idx](context)) - 1.0
+            outs.append(feat + self.beta[idx] * gate * feat)
+        return outs
+
 @register
 class TransformerLayer(nn.Layer):
     def __init__(self,
@@ -191,7 +230,10 @@ class HybridEncoder(nn.Layer):
                  use_p2_guidance=False,
                  p2_guidance_channels=None,
                  p2_guidance_dim=64,
-                 p2_residual_init=0.1):
+                 p2_residual_init=0.1,
+                 use_scale_balance=False,
+                 scale_balance_reduction=4,
+                 scale_balance_init=0.1):
         super(HybridEncoder, self).__init__()
         self.in_channels = in_channels
         self.feat_strides = feat_strides
@@ -204,6 +246,9 @@ class HybridEncoder(nn.Layer):
         self.p2_guidance_channels = p2_guidance_channels
         self.p2_guidance_dim = p2_guidance_dim
         self.p2_residual_init = p2_residual_init
+        self.use_scale_balance = use_scale_balance
+        self.scale_balance_reduction = scale_balance_reduction
+        self.scale_balance_init = scale_balance_init
         if self.use_p2_guidance:
             assert self.p2_guidance_channels is not None, (
                 'p2_guidance_channels must be set when use_p2_guidance=True')
@@ -237,6 +282,14 @@ class HybridEncoder(nn.Layer):
                 guide_channels=self.p2_guidance_dim,
                 residual_init=self.p2_residual_init,
                 act=act)
+
+        self.scale_balancer = None
+        if self.use_scale_balance:
+            self.scale_balancer = SemanticScaleBalancer(
+                self.hidden_dim,
+                num_scales=len(self.in_channels),
+                reduction=self.scale_balance_reduction,
+                balance_init=self.scale_balance_init)
 
         # top-down fpn
         self.lateral_convs = nn.LayerList()
@@ -352,6 +405,9 @@ class HybridEncoder(nn.Layer):
             out = self.pan_blocks[idx](paddle.concat(
                 [downsample_feat, feat_height], axis=1))
             outs.append(out)
+
+        if self.use_scale_balance:
+            outs = self.scale_balancer(outs)
 
         return outs
 
