@@ -290,7 +290,12 @@ class RTDETRTransformerv3(nn.Layer):
                  num_noise_denoising=100,
                  o2m_branch=False,
                  num_queries_o2m=450,
-                 eps=1e-2):
+                 eps=1e-2,
+                 use_small_object_query_selection=False,
+                 soqs_lambda=0.05,
+                 soqs_tau=0.04,
+                 soqs_level_weights=[1.0, 0.5, 0.25],
+                 soqs_apply_all_groups=False):
         super(RTDETRTransformerv3, self).__init__()
         assert position_embed_type in ['sine', 'learned'], \
             f'ValueError: position_embed_type not supported {position_embed_type}!'
@@ -307,6 +312,11 @@ class RTDETRTransformerv3(nn.Layer):
         self.num_classes = num_classes
         self.num_queries = [num_queries]
         self.eps = eps
+        self.use_small_object_query_selection = use_small_object_query_selection
+        self.soqs_lambda = soqs_lambda
+        self.soqs_tau = soqs_tau
+        self.soqs_level_weights = soqs_level_weights
+        self.soqs_apply_all_groups = soqs_apply_all_groups
         self.num_decoder_layers = num_decoder_layers
         self.eval_size = eval_size
 
@@ -586,6 +596,34 @@ class RTDETRTransformerv3(nn.Layer):
                                paddle.to_tensor(float("inf")))
         return anchors, valid_mask
 
+    def _get_small_object_selection_score(self,
+                                          cls_score,
+                                          bbox_unact,
+                                          spatial_shapes,
+                                          g_id):
+        if not self.use_small_object_query_selection:
+            return cls_score
+        if not self.soqs_apply_all_groups and g_id != 0:
+            return cls_score
+
+        pred_bbox = F.sigmoid(bbox_unact.detach())
+        pred_wh = paddle.clip(pred_bbox[..., 2:], min=1e-6)
+        pred_area = pred_wh[..., 0] * pred_wh[..., 1]
+        small_prior = paddle.exp(-pred_area / self.soqs_tau)
+
+        level_priors = []
+        for lvl, (h, w) in enumerate(spatial_shapes):
+            if lvl < len(self.soqs_level_weights):
+                level_weight = self.soqs_level_weights[lvl]
+            else:
+                level_weight = self.soqs_level_weights[-1]
+            level_priors.append(
+                paddle.full(
+                    [int(h) * int(w)], level_weight, dtype=cls_score.dtype))
+        level_prior = paddle.concat(level_priors, axis=0).unsqueeze(0)
+        small_score = small_prior * level_prior
+        return cls_score + self.soqs_lambda * small_score
+
     def _get_decoder_input(self,
                            memory,
                            spatial_shapes,
@@ -607,8 +645,11 @@ class RTDETRTransformerv3(nn.Layer):
             enc_outputs_class = self.enc_score_head[g_id](output_memory)
             enc_outputs_coord_unact = self.enc_bbox_head[g_id](output_memory) + anchors
 
+            select_score = self._get_small_object_selection_score(
+                enc_outputs_class.max(-1), enc_outputs_coord_unact,
+                spatial_shapes, g_id)
             _, topk_ind = paddle.topk(
-                enc_outputs_class.max(-1), self.num_queries[g_id], axis=1)
+                select_score, self.num_queries[g_id], axis=1)
             # extract region proposal boxes
             batch_ind = paddle.arange(end=bs, dtype=topk_ind.dtype)
             batch_ind = batch_ind.unsqueeze(-1).tile([1, self.num_queries[g_id]])
