@@ -231,6 +231,7 @@ class HybridEncoder(nn.Layer):
                  p2_guidance_channels=None,
                  p2_guidance_dim=64,
                  p2_residual_init=0.1,
+                 p2_injection_position='pre_neck',
                  use_scale_balance=False,
                  scale_balance_reduction=4,
                  scale_balance_init=0.1):
@@ -246,12 +247,15 @@ class HybridEncoder(nn.Layer):
         self.p2_guidance_channels = p2_guidance_channels
         self.p2_guidance_dim = p2_guidance_dim
         self.p2_residual_init = p2_residual_init
+        self.p2_injection_position = p2_injection_position
         self.use_scale_balance = use_scale_balance
         self.scale_balance_reduction = scale_balance_reduction
         self.scale_balance_init = scale_balance_init
         if self.use_p2_guidance:
             assert self.p2_guidance_channels is not None, (
                 'p2_guidance_channels must be set when use_p2_guidance=True')
+            assert self.p2_injection_position in ['pre_neck', 'post_pan'], (
+                'p2_injection_position must be pre_neck or post_pan')
 
         # channel projection
         self.input_proj = nn.LayerList()
@@ -276,9 +280,12 @@ class HybridEncoder(nn.Layer):
 
         self.p2_enhancer = None
         if self.use_p2_guidance:
+            p3_channels = self.hidden_dim \
+                if self.p2_injection_position == 'post_pan' \
+                else self.in_channels[0]
             self.p2_enhancer = P2GuidedFeatureEnhancer(
                 self.p2_guidance_channels,
-                self.in_channels[0],
+                p3_channels,
                 guide_channels=self.p2_guidance_dim,
                 residual_init=self.p2_residual_init,
                 act=act)
@@ -357,10 +364,12 @@ class HybridEncoder(nn.Layer):
             axis=1)[None, :, :]
 
     def forward(self, feats, for_mot=False, is_teacher=False):
+        p2_feat = None
         if self.use_p2_guidance:
             assert len(feats) == len(self.in_channels) + 1
-            p2_feat, feats = feats[0], feats[1:]
-            feats[0] = self.p2_enhancer(p2_feat, feats[0])
+            p2_feat, feats = feats[0], list(feats[1:])
+            if self.p2_injection_position == 'pre_neck':
+                feats[0] = self.p2_enhancer(p2_feat, feats[0])
         else:
             assert len(feats) == len(self.in_channels)
         # get projection features
@@ -408,6 +417,9 @@ class HybridEncoder(nn.Layer):
 
         if self.use_scale_balance:
             outs = self.scale_balancer(outs)
+
+        if self.use_p2_guidance and self.p2_injection_position == 'post_pan':
+            outs[0] = self.p2_enhancer(p2_feat, outs[0])
 
         return outs
 

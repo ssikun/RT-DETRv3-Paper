@@ -36,6 +36,9 @@ class RTDETRV3(BaseArch):
                  detr_head='DETRHead',
                  neck=None,
                  aux_o2m_head=None,
+                 small_object_aux_head=None,
+                 small_object_aux_loss_weight=0.5,
+                 small_object_max_size=32.0,
                  post_process='DETRPostProcess',
                  post_process_semi=None,
                  with_mask=False,
@@ -46,6 +49,9 @@ class RTDETRV3(BaseArch):
         self.detr_head = detr_head
         self.neck = neck
         self.aux_o2m_head = aux_o2m_head
+        self.small_object_aux_head = small_object_aux_head
+        self.small_object_aux_loss_weight = small_object_aux_loss_weight
+        self.small_object_max_size = small_object_max_size
         self.post_process = post_process
         self.with_mask = with_mask
         self.exclude_post_process = exclude_post_process
@@ -74,13 +80,42 @@ class RTDETRV3(BaseArch):
         kwargs = {'input_shape': neck.out_shape}
         aux_o2m_head = create(cfg['aux_o2m_head'], **kwargs)
 
+        small_object_aux_head = None
+        if cfg.get('small_object_aux_head', None):
+            kwargs = {'input_shape': neck.out_shape[:1]}
+            small_object_aux_head = create(
+                cfg['small_object_aux_head'], **kwargs)
+
         return {
             'backbone': backbone,
             'transformer': transformer,
             "detr_head": detr_head,
             "neck": neck,
-            "aux_o2m_head": aux_o2m_head
+            "aux_o2m_head": aux_o2m_head,
+            "small_object_aux_head": small_object_aux_head
         }
+
+    def _get_small_object_targets(self):
+        required = ['origin_gt_bbox', 'pad_origin_gt_mask']
+        missing = [key for key in required if key not in self.inputs]
+        if missing:
+            raise KeyError(
+                'Small-object auxiliary supervision requires {}. Enable '
+                'NormalizeBox.retain_origin_box and PadGT.only_origin_box.'.
+                format(', '.join(missing)))
+
+        boxes = self.inputs['origin_gt_bbox']
+        valid_mask = self.inputs['pad_origin_gt_mask']
+        widths = paddle.clip(boxes[:, :, 2] - boxes[:, :, 0], min=0.)
+        heights = paddle.clip(boxes[:, :, 3] - boxes[:, :, 1], min=0.)
+        areas = widths * heights
+        max_area = self.small_object_max_size**2
+        small_mask = paddle.logical_and(areas > 0., areas <= max_area)
+        small_mask = small_mask.unsqueeze(-1).astype(valid_mask.dtype)
+
+        targets = dict(self.inputs)
+        targets['pad_origin_gt_mask'] = valid_mask * small_mask
+        return targets
 
     def _forward(self):
         # Backbone
@@ -109,6 +144,19 @@ class RTDETRV3(BaseArch):
                         detr_losses[k] += v
                     k = k + '_aux_o2m'
                     detr_losses[k] = v
+            if self.small_object_aux_head is not None:
+                small_targets = self._get_small_object_targets()
+                small_aux_losses = self.small_object_aux_head(
+                    body_feats[:1], small_targets)
+                for k, v in small_aux_losses.items():
+                    weighted_loss = v * self.small_object_aux_loss_weight
+                    if k == 'loss':
+                        detr_losses[k] += weighted_loss
+                    detr_losses[k + '_small_aux'] = weighted_loss
+            if self.neck is not None and getattr(
+                    self.neck, 'p2_enhancer', None) is not None:
+                detr_losses['log_p2_alpha'] = \
+                    self.neck.p2_enhancer.alpha.detach()
             return detr_losses
         else:
             preds = self.detr_head(out_transformer, body_feats)

@@ -1,0 +1,44 @@
+_BASE_: [
+  'rtdetrv3_r18vd_visdrone_baseline.yml',
+]
+
+weights: output/rtdetrv3_r18vd_visdrone_p2_output_aux/model_final
+save_dir: output/rtdetrv3_r18vd_visdrone_p2_output_aux
+output_eval: output/rtdetrv3_r18vd_visdrone_p2_output_aux/eval
+
+ResNet:
+  return_idx: [0, 1, 2, 3]
+
+RTDETRV3:
+  small_object_aux_head: PPYOLOESmallObjectHead
+  small_object_aux_loss_weight: 0.5
+  small_object_max_size: 32.0
+
+HybridEncoder:
+  use_p2_guidance: True
+  p2_guidance_dim: 64
+  p2_residual_init: 0.1
+  p2_injection_position: post_pan
+  use_scale_balance: False
+
+PPYOLOESmallObjectHead:
+  fpn_strides: [8]
+  grid_cell_scale: 5.0
+  grid_cell_offset: 0.5
+  static_assigner_epoch: 1
+  use_varifocal_loss: True
+  loss_weight: {class: 1.0, iou: 2.5, dfl: 0.5}
+  static_assigner:
+    name: ATSSAssigner
+    topk: 9
+  assigner:
+    name: TaskAlignedAssigner
+    topk: 13
+    alpha: 1.0
+    beta: 6.0
+  nms:
+    name: MultiClassNMS
+    nms_top_k: 1000
+    keep_top_k: 300
+    score_threshold: 0.01
+    nms_threshold: 0.7

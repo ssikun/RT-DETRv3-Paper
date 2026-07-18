@@ -28,7 +28,7 @@ from ppdet.modeling.backbones.cspresnet import ConvBNLayer, RepVggBlock
 from ppdet.modeling.ops import get_static_shape, get_act_fn
 from ppdet.modeling.layers import MultiClassNMS
 
-__all__ = ['PPYOLOEHead', 'SimpleConvHead']
+__all__ = ['PPYOLOEHead', 'PPYOLOESmallObjectHead', 'SimpleConvHead']
 
 
 class ESEAttn(nn.Layer):
@@ -623,6 +623,11 @@ class ScaleReg(nn.Layer):
 
     def forward(self, x):
         return x * self.scale
+
+
+@register
+class PPYOLOESmallObjectHead(PPYOLOEHead):
+    """Single-level PP-YOLOE head used only for small-object supervision."""
 
 
 @register
