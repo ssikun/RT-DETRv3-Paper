@@ -1,3 +1,9 @@
+import os
+import sys
+
+parent_path = os.path.abspath(os.path.join(__file__, *(['..'] * 2)))
+sys.path.insert(0, parent_path)
+
 import paddle
 import paddle.nn.functional as F
 
