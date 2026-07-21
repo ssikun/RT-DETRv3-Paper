@@ -738,6 +738,7 @@ class PPYOLOESmallObjectIgnoreHead(PPYOLOESmallObjectHead):
         positive, final_ignore, negative, overlap, valid = \
             self._build_classification_masks(assigned_scores,
                                              self._raw_ignore_mask)
+        final_overlap = paddle.logical_and(positive, final_ignore)
         self._cls_valid_mask = valid
         losses = super().get_loss_from_assign(
             pred_scores, pred_distri, pred_bboxes, anchor_points_s,
@@ -752,10 +753,42 @@ class PPYOLOESmallObjectIgnoreHead(PPYOLOESmallObjectHead):
             negative.sum(axis=1).detach(),
             'positive_ignore_overlap':
             overlap.sum(axis=1).detach(),
+            'final_positive_ignore_overlap':
+            final_overlap.sum(axis=1).detach(),
             'all_locations':
             paddle.full(
                 [positive.shape[0]], positive.shape[1], dtype='int64')
         })
+        if not getattr(self, '_supervision_stats_printed', False):
+            stats = {
+                key: value.numpy().tolist()
+                for key, value in self.supervision_stats.items()
+            }
+            for image_idx in range(positive.shape[0]):
+                partition_count = int(stats['positive'][image_idx]) + \
+                    int(stats['ignore'][image_idx]) + \
+                    int(stats['valid_negative'][image_idx])
+                assert partition_count == int(
+                    stats['all_locations'][image_idx])
+                assert int(
+                    stats['final_positive_ignore_overlap'][image_idx]) == 0
+                print(
+                    '[SmallAuxStats] image={} valid_gt={} small_gt={} '
+                    'medium_large_gt={} positive={} ignore={} '
+                    'valid_negative={} all_locations={} raw_overlap={} '
+                    'final_overlap={}'.format(
+                        image_idx,
+                        int(stats['small_gt'][image_idx] +
+                            stats['medium_large_gt'][image_idx]),
+                        int(stats['small_gt'][image_idx]),
+                        int(stats['medium_large_gt'][image_idx]),
+                        int(stats['positive'][image_idx]),
+                        int(stats['ignore'][image_idx]),
+                        int(stats['valid_negative'][image_idx]),
+                        int(stats['all_locations'][image_idx]),
+                        int(stats['positive_ignore_overlap'][image_idx]),
+                        int(stats['final_positive_ignore_overlap'][image_idx])))
+            self._supervision_stats_printed = True
         losses.update({
             'log_positive_locations':
             positive.astype('float32').sum(),
