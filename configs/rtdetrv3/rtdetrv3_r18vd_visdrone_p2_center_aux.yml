@@ -1,0 +1,18 @@
+_BASE_: [
+  'rtdetrv3_r18vd_visdrone_p2_output_aux.yml',
+]
+
+weights: output/rtdetrv3_r18vd_visdrone_p2_center_aux/model_final
+save_dir: output/rtdetrv3_r18vd_visdrone_p2_center_aux
+output_eval: output/rtdetrv3_r18vd_visdrone_p2_center_aux/eval
+
+RTDETRV3:
+  small_object_aux_head: null
+  p2_center_aux_head: P2SmallObjectCenterHead
+  p2_center_aux_loss_weight: 0.25
+
+P2SmallObjectCenterHead:
+  hidden_channels: 64
+  stride: 4
+  small_object_max_size: 32.0
+  focal_alpha: 2.0

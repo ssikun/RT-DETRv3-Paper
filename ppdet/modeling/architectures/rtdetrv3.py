@@ -39,6 +39,8 @@ class RTDETRV3(BaseArch):
                  small_object_aux_head=None,
                  small_object_aux_loss_weight=0.5,
                  small_object_max_size=32.0,
+                 p2_center_aux_head=None,
+                 p2_center_aux_loss_weight=0.25,
                  post_process='DETRPostProcess',
                  post_process_semi=None,
                  with_mask=False,
@@ -52,6 +54,8 @@ class RTDETRV3(BaseArch):
         self.small_object_aux_head = small_object_aux_head
         self.small_object_aux_loss_weight = small_object_aux_loss_weight
         self.small_object_max_size = small_object_max_size
+        self.p2_center_aux_head = p2_center_aux_head
+        self.p2_center_aux_loss_weight = p2_center_aux_loss_weight
         self.post_process = post_process
         self.with_mask = with_mask
         self.exclude_post_process = exclude_post_process
@@ -86,13 +90,20 @@ class RTDETRV3(BaseArch):
             small_object_aux_head = create(
                 cfg['small_object_aux_head'], **kwargs)
 
+        p2_center_aux_head = None
+        if cfg.get('p2_center_aux_head', None):
+            kwargs = {'input_shape': backbone.out_shape[:1]}
+            p2_center_aux_head = create(
+                cfg['p2_center_aux_head'], **kwargs)
+
         return {
             'backbone': backbone,
             'transformer': transformer,
             "detr_head": detr_head,
             "neck": neck,
             "aux_o2m_head": aux_o2m_head,
-            "small_object_aux_head": small_object_aux_head
+            "small_object_aux_head": small_object_aux_head,
+            "p2_center_aux_head": p2_center_aux_head
         }
 
     def _get_small_object_targets(self):
@@ -124,11 +135,12 @@ class RTDETRV3(BaseArch):
 
     def _forward(self):
         # Backbone
-        body_feats = self.backbone(self.inputs)
+        backbone_feats = self.backbone(self.inputs)
+        body_feats = backbone_feats
 
         # Neck
         if self.neck is not None:
-            body_feats = self.neck(body_feats)
+            body_feats = self.neck(backbone_feats)
 
         # Transformer
         pad_mask = self.inputs.get('pad_mask', None)
@@ -161,6 +173,17 @@ class RTDETRV3(BaseArch):
                     if k == 'loss':
                         detr_losses[k] += weighted_loss
                     detr_losses[k + '_small_aux'] = weighted_loss
+            if self.p2_center_aux_head is not None:
+                center_aux_losses = self.p2_center_aux_head(
+                    backbone_feats[0], self.inputs)
+                for k, v in center_aux_losses.items():
+                    if k.startswith('log_'):
+                        detr_losses[k + '_p2_center_aux'] = v.detach()
+                        continue
+                    weighted_loss = v * self.p2_center_aux_loss_weight
+                    if k == 'loss':
+                        detr_losses[k] += weighted_loss
+                    detr_losses[k + '_p2_center_aux'] = weighted_loss
             if self.neck is not None and getattr(
                     self.neck, 'p2_enhancer', None) is not None:
                 detr_losses['log_p2_alpha'] = \
