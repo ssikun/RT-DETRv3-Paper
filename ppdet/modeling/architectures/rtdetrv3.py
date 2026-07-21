@@ -110,11 +110,16 @@ class RTDETRV3(BaseArch):
         heights = paddle.clip(boxes[:, :, 3] - boxes[:, :, 1], min=0.)
         areas = widths * heights
         max_area = self.small_object_max_size**2
+        valid_bool = valid_mask.squeeze(-1).astype('bool')
         small_mask = paddle.logical_and(areas > 0., areas <= max_area)
-        small_mask = small_mask.unsqueeze(-1).astype(valid_mask.dtype)
+        small_mask = paddle.logical_and(small_mask, valid_bool)
+        medium_large_mask = paddle.logical_and(areas > max_area, valid_bool)
 
         targets = dict(self.inputs)
-        targets['pad_origin_gt_mask'] = valid_mask * small_mask
+        targets['pad_origin_gt_mask'] = small_mask.unsqueeze(-1).astype(
+            valid_mask.dtype)
+        targets['small_aux_ignore_gt_mask'] = \
+            medium_large_mask.unsqueeze(-1).astype(valid_mask.dtype)
         return targets
 
     def _forward(self):
@@ -149,6 +154,9 @@ class RTDETRV3(BaseArch):
                 small_aux_losses = self.small_object_aux_head(
                     body_feats[:1], small_targets)
                 for k, v in small_aux_losses.items():
+                    if k.startswith('log_'):
+                        detr_losses[k + '_small_aux'] = v.detach()
+                        continue
                     weighted_loss = v * self.small_object_aux_loss_weight
                     if k == 'loss':
                         detr_losses[k] += weighted_loss

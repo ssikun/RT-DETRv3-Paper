@@ -28,7 +28,10 @@ from ppdet.modeling.backbones.cspresnet import ConvBNLayer, RepVggBlock
 from ppdet.modeling.ops import get_static_shape, get_act_fn
 from ppdet.modeling.layers import MultiClassNMS
 
-__all__ = ['PPYOLOEHead', 'PPYOLOESmallObjectHead', 'SimpleConvHead']
+__all__ = [
+    'PPYOLOEHead', 'PPYOLOESmallObjectHead',
+    'PPYOLOESmallObjectIgnoreHead', 'SimpleConvHead'
+]
 
 
 class ESEAttn(nn.Layer):
@@ -628,6 +631,142 @@ class ScaleReg(nn.Layer):
 @register
 class PPYOLOESmallObjectHead(PPYOLOEHead):
     """Single-level PP-YOLOE head used only for small-object supervision."""
+
+
+@register
+class PPYOLOESmallObjectIgnoreHead(PPYOLOESmallObjectHead):
+    """Small-object head with medium/large regions ignored for classification."""
+
+    @staticmethod
+    def _build_medium_large_ignore_mask(anchor_points, stride_tensor,
+                                        gt_bboxes, ignore_gt_mask):
+        point_pixels = anchor_points * stride_tensor
+        point_pixels = point_pixels.reshape([1, 1, -1, 2])
+        boxes = gt_bboxes.unsqueeze(2)
+        point_x = point_pixels[..., 0]
+        point_y = point_pixels[..., 1]
+        inside = paddle.logical_and(point_x >= boxes[..., 0],
+                                    point_x <= boxes[..., 2])
+        inside = paddle.logical_and(
+            inside,
+            paddle.logical_and(point_y >= boxes[..., 1],
+                               point_y <= boxes[..., 3]))
+        valid_ignore_gt = ignore_gt_mask.squeeze(-1).astype('bool')
+        inside = paddle.logical_and(inside, valid_ignore_gt.unsqueeze(-1))
+        return paddle.any(inside, axis=1)
+
+    @staticmethod
+    def _build_classification_masks(assigned_scores, raw_ignore_mask):
+        positive_mask = assigned_scores.sum(axis=-1) > 0
+        overlap_mask = paddle.logical_and(positive_mask, raw_ignore_mask)
+        final_ignore_mask = paddle.logical_and(raw_ignore_mask,
+                                               ~positive_mask)
+        valid_mask = ~final_ignore_mask
+        negative_mask = paddle.logical_and(valid_mask, ~positive_mask)
+        return positive_mask, final_ignore_mask, negative_mask, overlap_mask, \
+            valid_mask
+
+    @staticmethod
+    def _masked_varifocal_loss(pred_score,
+                               gt_score,
+                               label,
+                               valid_mask,
+                               alpha=0.75,
+                               gamma=2.0):
+        weight = alpha * pred_score.pow(gamma) * (1 - label) + \
+            gt_score * label
+        loss = F.binary_cross_entropy(
+            pred_score, gt_score, weight=weight, reduction='none')
+        valid_mask = valid_mask.unsqueeze(-1).astype(loss.dtype)
+        return (loss * valid_mask).sum()
+
+    @staticmethod
+    def _masked_focal_loss(score,
+                           label,
+                           valid_mask,
+                           alpha=0.25,
+                           gamma=2.0):
+        weight = (score - label).pow(gamma)
+        if alpha > 0:
+            alpha_t = alpha * label + (1 - alpha) * (1 - label)
+            weight *= alpha_t
+        loss = F.binary_cross_entropy(
+            score, label, weight=weight, reduction='none')
+        valid_mask = valid_mask.unsqueeze(-1).astype(loss.dtype)
+        return (loss * valid_mask).sum()
+
+    def forward_train(self, feats, targets, aux_pred=None):
+        required = [
+            'origin_gt_bbox', 'pad_origin_gt_mask',
+            'small_aux_ignore_gt_mask'
+        ]
+        missing = [key for key in required if key not in targets]
+        if missing:
+            raise KeyError(
+                'Small-object ignore supervision requires {}.'.format(
+                    ', '.join(missing)))
+
+        anchor_points, stride_tensor = self._generate_anchors(feats)
+        self._raw_ignore_mask = self._build_medium_large_ignore_mask(
+            anchor_points, stride_tensor, targets['origin_gt_bbox'],
+            targets['small_aux_ignore_gt_mask'])
+        self.supervision_stats = {
+            'small_gt':
+            targets['pad_origin_gt_mask'].squeeze(-1).sum(axis=1).detach(),
+            'medium_large_gt':
+            targets['small_aux_ignore_gt_mask'].squeeze(-1).sum(
+                axis=1).detach()
+        }
+        return super().forward_train(feats, targets, aux_pred)
+
+    def _varifocal_loss(self,
+                        pred_score,
+                        gt_score,
+                        label,
+                        alpha=0.75,
+                        gamma=2.0):
+        return self._masked_varifocal_loss(
+            pred_score, gt_score, label, self._cls_valid_mask, alpha, gamma)
+
+    def _focal_loss(self, score, label, alpha=0.25, gamma=2.0):
+        return self._masked_focal_loss(score, label, self._cls_valid_mask,
+                                       alpha, gamma)
+
+    def get_loss_from_assign(self, pred_scores, pred_distri, pred_bboxes,
+                             anchor_points_s, assigned_labels,
+                             assigned_bboxes, assigned_scores, alpha_l):
+        positive, final_ignore, negative, overlap, valid = \
+            self._build_classification_masks(assigned_scores,
+                                             self._raw_ignore_mask)
+        self._cls_valid_mask = valid
+        losses = super().get_loss_from_assign(
+            pred_scores, pred_distri, pred_bboxes, anchor_points_s,
+            assigned_labels, assigned_bboxes, assigned_scores, alpha_l)
+
+        self.supervision_stats.update({
+            'positive':
+            positive.sum(axis=1).detach(),
+            'ignore':
+            final_ignore.sum(axis=1).detach(),
+            'valid_negative':
+            negative.sum(axis=1).detach(),
+            'positive_ignore_overlap':
+            overlap.sum(axis=1).detach(),
+            'all_locations':
+            paddle.full(
+                [positive.shape[0]], positive.shape[1], dtype='int64')
+        })
+        losses.update({
+            'log_positive_locations':
+            positive.astype('float32').sum(),
+            'log_ignore_locations':
+            final_ignore.astype('float32').sum(),
+            'log_valid_negative_locations':
+            negative.astype('float32').sum(),
+            'log_positive_ignore_overlap':
+            overlap.astype('float32').sum()
+        })
+        return losses
 
 
 @register
