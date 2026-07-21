@@ -790,8 +790,17 @@ class PPYOLOESmallObjectIgnoreHead(PPYOLOESmallObjectHead):
                         int(stats['final_positive_ignore_overlap'][image_idx])))
             self._supervision_stats_printed = True
         losses.update({
+            'log_small_gt':
+            self.supervision_stats['small_gt'].astype('float32').sum(),
+            'log_medium_large_gt':
+            self.supervision_stats['medium_large_gt'].astype(
+                'float32').sum(),
             'log_positive_locations':
             positive.astype('float32').sum(),
+            'log_positive_per_small_gt':
+            positive.astype('float32').sum() / paddle.clip(
+                self.supervision_stats['small_gt'].astype('float32').sum(),
+                min=1.),
             'log_ignore_locations':
             final_ignore.astype('float32').sum(),
             'log_valid_negative_locations':
