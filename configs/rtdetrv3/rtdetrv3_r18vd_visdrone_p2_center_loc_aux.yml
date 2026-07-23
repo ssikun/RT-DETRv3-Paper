@@ -1,0 +1,11 @@
+_BASE_: [
+  'rtdetrv3_r18vd_visdrone_p2_center_aux.yml',
+]
+
+weights: output/rtdetrv3_r18vd_visdrone_p2_center_loc_aux/model_final
+save_dir: output/rtdetrv3_r18vd_visdrone_p2_center_loc_aux
+output_eval: output/rtdetrv3_r18vd_visdrone_p2_center_loc_aux/eval
+
+P2SmallObjectCenterHead:
+  use_localization: True
+  localization_loss_weight: 0.1
