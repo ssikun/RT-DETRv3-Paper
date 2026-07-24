@@ -8,4 +8,4 @@ output_eval: output/rtdetrv3_r18vd_visdrone_p2_center_loc_aux/eval
 
 P2SmallObjectCenterHead:
   use_localization: True
-  localization_loss_weight: 0.1
+  localization_loss_weight: 1.0
