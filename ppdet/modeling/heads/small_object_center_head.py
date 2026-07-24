@@ -165,7 +165,7 @@ class P2SmallObjectCenterHead(nn.Layer):
 
         cell_ids = (
             small_indices[:, 0] * height * width + grid_y * width + grid_x)
-        order = paddle.argsort(cell_ids, stable=True)
+        order = paddle.argsort(cell_ids)
         sorted_ids = paddle.gather(cell_ids, order)
         first = paddle.concat([
             paddle.ones([1], dtype='bool'),
