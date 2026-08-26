@@ -66,6 +66,11 @@ def parse_args():
         help="If set True, enable continuous evaluation job."
         "This flag is only used for internal test.")
     parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for Paddle, NumPy, and Python.")
+    parser.add_argument(
         "--amp",
         action='store_true',
         default=False,
@@ -127,8 +132,10 @@ def run(FLAGS, cfg):
         # init parallel environment if nranks > 1
         init_parallel_env()
 
-    if FLAGS.enable_ce:
-        set_random_seed(0)
+    seed = 0 if FLAGS.enable_ce else FLAGS.seed
+    if seed is not None:
+        set_random_seed(seed)
+        logger.info("Random seed set to {}".format(seed))
 
     # build trainer
     ssod_method = cfg.get('ssod_method', None)
