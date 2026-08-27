@@ -62,6 +62,11 @@ class ProposalRecallArgsParser(ArgsParser):
         self.add_argument('--worker-num', type=int, default=0)
         self.add_argument('--seed', type=int, default=2026)
         self.add_argument('--device', choices=['gpu', 'cpu'], default='gpu')
+        self.add_argument(
+            '--max-images',
+            type=int,
+            default=0,
+            help='Maximum images to scan; 0 scans the full dataset.')
         self.add_argument('--progress-every', type=int, default=50)
 
 
@@ -220,6 +225,8 @@ def main():
         raise ValueError('--radii values cannot be negative.')
     if args.progress_every < 0:
         raise ValueError('--progress-every cannot be negative.')
+    if args.max_images < 0:
+        raise ValueError('--max-images cannot be negative.')
 
     topk_values = sorted(set(args.topk))
     radii = sorted(set(args.radii))
@@ -258,6 +265,8 @@ def main():
 
     with paddle.no_grad():
         for image_index, data in enumerate(loader):
+            if args.max_images and image_index >= args.max_images:
+                break
             resized_boxes = _valid_boxes(data)
             scale_factor = _single_image_array(data['scale_factor']).reshape(
                 [-1])
@@ -343,6 +352,7 @@ def main():
         'weights': os.path.abspath(args.weights),
         'image_count': image_count,
         'small_gt_count': small_gt_count,
+        'max_images': args.max_images,
         'topk': topk_values,
         'radii': radii,
         'proposal_recall': rows,
