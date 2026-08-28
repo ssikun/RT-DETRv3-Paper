@@ -58,6 +58,11 @@ class ComplementarityArgsParser(ArgsParser):
                           type=int,
                           nargs='+',
                           default=[25, 50, 75, 100])
+        self.add_argument('--base-topk',
+                          type=int,
+                          nargs='+',
+                          default=[300, 450, 600],
+                          help='Original encoder proposal budgets to compare.')
         self.add_argument('--p2-pool-size', type=int, default=300)
         self.add_argument('--iou-thresholds',
                           type=float,
@@ -280,6 +285,8 @@ def main():
     args = ComplementarityArgsParser().parse_args()
     if any(value <= 0 for value in args.reserve_queries):
         raise ValueError('--reserve-queries values must be positive.')
+    if any(value <= 0 for value in args.base_topk):
+        raise ValueError('--base-topk values must be positive.')
     if args.p2_pool_size <= 0:
         raise ValueError('--p2-pool-size must be positive.')
     if any(value <= 0 or value > 1 for value in args.iou_thresholds):
@@ -290,6 +297,7 @@ def main():
         raise ValueError('--max-images cannot be negative.')
 
     reserve_values = sorted(set(args.reserve_queries))
+    base_topk_values = sorted(set(args.base_topk))
     thresholds = sorted(set(args.iou_thresholds))
     paddle.set_device(args.device)
     set_random_seed(args.seed)
@@ -319,6 +327,9 @@ def main():
 
     transformer = model.transformer
     total_queries = int(transformer.num_queries[0])
+    if total_queries not in base_topk_values:
+        base_topk_values.append(total_queries)
+        base_topk_values.sort()
     if max(reserve_values) >= total_queries:
         raise ValueError(
             'Reserved queries must be smaller than {}.'.format(total_queries))
@@ -367,8 +378,16 @@ def main():
             class_logits = transformer.enc_score_head[0](output_memory)
             box_unact = transformer.enc_bbox_head[0](output_memory) + anchors
             base_scores = class_logits.max(axis=-1)
-            _, base_indices = paddle.topk(base_scores, k=total_queries, axis=1)
-            base_order = base_indices[0].numpy().astype(np.int64)
+            maximum_base_topk = max(base_topk_values)
+            if maximum_base_topk > int(base_scores.shape[1]):
+                raise ValueError(
+                    'Requested base Top-K {} exceeds {} encoder proposals.'.
+                    format(maximum_base_topk, int(base_scores.shape[1])))
+            _, base_indices = paddle.topk(base_scores,
+                                          k=maximum_base_topk,
+                                          axis=1)
+            base_order_full = base_indices[0].numpy().astype(np.int64)
+            base_order = base_order_full[:total_queries]
 
             p3_height, p3_width = spatial_shapes[0]
             p3_height, p3_width = int(p3_height), int(p3_width)
@@ -387,7 +406,10 @@ def main():
             all_boxes = _cxcywh_to_xyxy(all_boxes, int(image_height),
                                         int(image_width))
 
-            selections = {'base_top{}'.format(total_queries): base_order}
+            selections = {
+                'base_top{}'.format(topk): base_order_full[:topk]
+                for topk in base_topk_values
+            }
             base_set = set(int(index) for index in base_order)
             for quota in reserve_values:
                 selected, p2_added = _reserve_selection(
@@ -437,6 +459,7 @@ def main():
         'weights': os.path.abspath(args.weights),
         'image_count': image_count,
         'total_queries': total_queries,
+        'base_topk': base_topk_values,
         'reserve_queries': reserve_values,
         'p2_pool_size': args.p2_pool_size,
         'iou_thresholds': thresholds,
