@@ -4,7 +4,7 @@ set -Eeuo pipefail
 repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repo_dir"
 python_bin=${RTDETR_PYTHON:-/root/rivermind-data/venvs/paddle262-cu118-3090/bin/python}
-run_id=${RTDETR_PROBE_ID:-20261012}
+run_id=${RTDETR_PROBE_ID:-20261012_bs1}
 output_dir="output/p2_query_detail_frozen_probe_${run_id}"
 status_file="logs/p2_query_detail_frozen_probe_${run_id}.status"
 mkdir -p logs
@@ -33,7 +33,7 @@ timeout --signal=TERM --kill-after=60s 10800s "$python_bin" -u \
     -c configs/rtdetrv3/rtdetrv3_r18vd_visdrone_p2_query_detail.yml \
     --baseline eval_weights/baseline40_model_final.pdparams \
     --output-dir "$output_dir" \
-    --epochs 5 --seed 3407 --batch-size 2 --lr 0.0001 --device gpu --amp \
+    --epochs 5 --seed 3407 --batch-size 1 --lr 0.0001 --device gpu --amp \
     -o TrainDataset.dataset_dir=dataset/visdrone2019 \
        TrainDataset.anno_path=annotations/train.json \
        EvalDataset.dataset_dir=dataset/visdrone2019 \

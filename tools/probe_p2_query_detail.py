@@ -161,7 +161,7 @@ def main():
     parser.add_argument('--epochs', type=int, choices=range(1, 6), default=5)
     parser.add_argument('--seed', type=int, default=3407)
     parser.add_argument('--lr', type=float, default=0.0001)
-    parser.add_argument('--batch-size', type=int, default=2)
+    parser.add_argument('--batch-size', type=int, default=1)
     parser.add_argument('--device', choices=('cpu', 'gpu'), default='gpu')
     parser.add_argument('--amp', action='store_true')
     parser.add_argument('--smoke-only', action='store_true')
@@ -285,11 +285,13 @@ def main():
                 eta = elapsed / (step + 1) * (len(train_loader) - step - 1)
                 print('[FrozenProbe] epoch={}/{} step={}/{} loss={:.6f} '
                       'residual_ratio={:.6f} mean_gate={:.6f} eta_seconds={:.0f} '
-                      'max_allocated_mb={:.0f}'.format(
+                      'max_allocated_mb={:.0f} max_reserved_mb={:.0f}'.format(
                           epoch, args.epochs, step, len(train_loader), float(loss),
                           float(losses['log_p2_detail_residual_ratio']),
                           float(losses['log_p2_detail_mean_gate']), eta,
                           paddle.device.cuda.max_memory_allocated() / 1024**2
+                          if args.device == 'gpu' else 0.,
+                          paddle.device.cuda.max_memory_reserved() / 1024**2
                           if args.device == 'gpu' else 0.), flush=True)
         frozen.verify()
         paddle.save(model.state_dict(), str(args.output_dir / ('epoch_{}.pdparams'.format(epoch))))

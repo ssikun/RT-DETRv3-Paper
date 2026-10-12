@@ -93,13 +93,20 @@ The real-data GPU smoke passed on RTX 3090, Paddle 2.6.2 / CUDA 11.8, at
 predictions, a nonzero new projection gradient, and unchanged original state
 after optimizer steps. This establishes implementation behavior, not AP gain.
 
-The five-epoch probe uses seed 3407, batch size two, new-branch learning rate
+The five-epoch probe uses seed 3407, batch size one, new-branch learning rate
 0.0001 with 200-step warmup, AMP training and FP32 Q300 evaluation. Original
 parameters and BatchNorm statistics remain fixed. Evaluation before training
 and after every epoch is retained, along with full epoch weights and CSV/JSON
 results. The runner has a three-hour hard limit and is configured to shut down
 the server after success or failure, as requested by the user. It cannot
 automatically continue into full training.
+
+The initial batch-size-two run was stopped at the user's request during its
+first epoch, after full validation of the starting model. At that point GPU
+occupancy was about 17.3 GB and logged peak allocated tensor memory was about
+5.5 GB. These are distinct measurements; neither establishes the worst-case
+memory across all training images. The batch-size-one run starts afresh from
+the same baseline in `output/p2_query_detail_frozen_probe_20261012_bs1`.
 
 1. Run tools/check_p2_query_detail.py on CPU: zero-init equivalence, correct
    input-space gate, small-query/P2 gradients, zero P2 gradient for gated-out
