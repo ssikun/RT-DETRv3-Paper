@@ -41,6 +41,7 @@ class RTDETRV3(BaseArch):
                  small_object_max_size=32.0,
                  p2_center_aux_head=None,
                  p2_center_aux_loss_weight=0.25,
+                 p2_center_aux_only=False,
                  post_process='DETRPostProcess',
                  post_process_semi=None,
                  with_mask=False,
@@ -56,6 +57,14 @@ class RTDETRV3(BaseArch):
         self.small_object_max_size = small_object_max_size
         self.p2_center_aux_head = p2_center_aux_head
         self.p2_center_aux_loss_weight = p2_center_aux_loss_weight
+        self.p2_center_aux_only = p2_center_aux_only
+        if self.p2_center_aux_only:
+            if self.p2_center_aux_head is None or self.neck is None:
+                raise ValueError(
+                    'p2_center_aux_only requires a P2 center head and neck')
+            if getattr(self.neck, 'use_p2_guidance', False):
+                raise ValueError(
+                    'p2_center_aux_only requires use_p2_guidance=False')
         self.post_process = post_process
         self.with_mask = with_mask
         self.exclude_post_process = exclude_post_process
@@ -66,7 +75,13 @@ class RTDETRV3(BaseArch):
         # backbone
         backbone = create(cfg['backbone'])
         # neck
-        kwargs = {'input_shape': backbone.out_shape}
+        neck_input_shape = backbone.out_shape
+        if cfg.get('p2_center_aux_only', False):
+            if len(neck_input_shape) != 4:
+                raise ValueError(
+                    'p2_center_aux_only requires P2/P3/P4/P5 backbone outputs')
+            neck_input_shape = neck_input_shape[1:]
+        kwargs = {'input_shape': neck_input_shape}
         neck = create(cfg['neck'], **kwargs) if cfg['neck'] else None
 
         # transformer
@@ -140,7 +155,9 @@ class RTDETRV3(BaseArch):
 
         # Neck
         if self.neck is not None:
-            body_feats = self.neck(backbone_feats)
+            neck_feats = backbone_feats[1:] if self.p2_center_aux_only \
+                else backbone_feats
+            body_feats = self.neck(neck_feats)
 
         # Transformer
         pad_mask = self.inputs.get('pad_mask', None)

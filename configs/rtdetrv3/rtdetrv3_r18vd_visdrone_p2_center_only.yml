@@ -1,0 +1,13 @@
+_BASE_: [
+  'rtdetrv3_r18vd_visdrone_p2_center_aux.yml',
+]
+
+weights: output/rtdetrv3_r18vd_visdrone_p2_center_only/model_final
+save_dir: output/rtdetrv3_r18vd_visdrone_p2_center_only
+output_eval: output/rtdetrv3_r18vd_visdrone_p2_center_only/eval
+
+RTDETRV3:
+  p2_center_aux_only: True
+
+HybridEncoder:
+  use_p2_guidance: False
