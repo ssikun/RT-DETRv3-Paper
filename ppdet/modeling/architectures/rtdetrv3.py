@@ -42,6 +42,7 @@ class RTDETRV3(BaseArch):
                  p2_center_aux_head=None,
                  p2_center_aux_loss_weight=0.25,
                  p2_center_aux_only=False,
+                 exclude_p2_from_neck=False,
                  post_process='DETRPostProcess',
                  post_process_semi=None,
                  with_mask=False,
@@ -58,13 +59,21 @@ class RTDETRV3(BaseArch):
         self.p2_center_aux_head = p2_center_aux_head
         self.p2_center_aux_loss_weight = p2_center_aux_loss_weight
         self.p2_center_aux_only = p2_center_aux_only
-        if self.p2_center_aux_only:
-            if self.p2_center_aux_head is None or self.neck is None:
+        self.exclude_p2_from_neck = (
+            exclude_p2_from_neck or self.p2_center_aux_only)
+        if self.p2_center_aux_only and self.p2_center_aux_head is None:
+            raise ValueError('p2_center_aux_only requires a P2 center head')
+        if self.exclude_p2_from_neck:
+            if self.neck is None:
                 raise ValueError(
-                    'p2_center_aux_only requires a P2 center head and neck')
+                    'exclude_p2_from_neck requires a neck')
             if getattr(self.neck, 'use_p2_guidance', False):
                 raise ValueError(
-                    'p2_center_aux_only requires use_p2_guidance=False')
+                    'exclude_p2_from_neck requires use_p2_guidance=False')
+        if getattr(self.transformer, 'use_p2_query_detail', False) and \
+                not self.exclude_p2_from_neck:
+            raise ValueError(
+                'P2 query detail requires exclude_p2_from_neck=True')
         self.post_process = post_process
         self.with_mask = with_mask
         self.exclude_post_process = exclude_post_process
@@ -76,10 +85,12 @@ class RTDETRV3(BaseArch):
         backbone = create(cfg['backbone'])
         # neck
         neck_input_shape = backbone.out_shape
-        if cfg.get('p2_center_aux_only', False):
-            if len(neck_input_shape) != 4:
+        exclude_p2 = cfg.get('exclude_p2_from_neck', False) or \
+            cfg.get('p2_center_aux_only', False)
+        if exclude_p2:
+            if len(neck_input_shape) != 4 or neck_input_shape[0].stride != 4:
                 raise ValueError(
-                    'p2_center_aux_only requires P2/P3/P4/P5 backbone outputs')
+                    'exclude_p2_from_neck requires P2/P3/P4/P5 outputs')
             neck_input_shape = neck_input_shape[1:]
         kwargs = {'input_shape': neck_input_shape}
         neck = create(cfg['neck'], **kwargs) if cfg['neck'] else None
@@ -87,6 +98,8 @@ class RTDETRV3(BaseArch):
         # transformer
         if neck is not None:
             kwargs = {'input_shape': neck.out_shape}
+        if exclude_p2:
+            kwargs['p2_input_shape'] = backbone.out_shape[0]
         transformer = create(cfg['transformer'], **kwargs)
         # head
         kwargs = {
@@ -155,13 +168,17 @@ class RTDETRV3(BaseArch):
 
         # Neck
         if self.neck is not None:
-            neck_feats = backbone_feats[1:] if self.p2_center_aux_only \
+            neck_feats = backbone_feats[1:] if self.exclude_p2_from_neck \
                 else backbone_feats
             body_feats = self.neck(neck_feats)
 
         # Transformer
         pad_mask = self.inputs.get('pad_mask', None)
-        out_transformer = self.transformer(body_feats, pad_mask, self.inputs)
+        if getattr(self.transformer, 'use_p2_query_detail', False):
+            out_transformer = self.transformer(
+                body_feats, pad_mask, self.inputs, p2_feat=backbone_feats[0])
+        else:
+            out_transformer = self.transformer(body_feats, pad_mask, self.inputs)
 
         # DETR Head
         if self.training:
@@ -205,6 +222,13 @@ class RTDETRV3(BaseArch):
                     self.neck, 'p2_enhancer', None) is not None:
                 detr_losses['log_p2_alpha'] = \
                     self.neck.p2_enhancer.alpha.detach()
+            detail = getattr(self.transformer, 'p2_query_detail', None)
+            if detail is not None:
+                detr_losses['log_p2_detail_mean_gate'] = detail.last_gate.mean()
+                detr_losses['log_p2_detail_active_fraction'] = \
+                    (detail.last_gate > 0).astype('float32').mean()
+                detr_losses['log_p2_detail_residual_ratio'] = \
+                    detail.last_residual_ratio
             return detr_losses
         else:
             preds = self.detr_head(out_transformer, body_feats)

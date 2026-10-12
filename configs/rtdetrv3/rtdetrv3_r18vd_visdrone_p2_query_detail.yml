@@ -1,0 +1,26 @@
+_BASE_: [
+  'rtdetrv3_r18vd_visdrone_baseline.yml',
+]
+
+weights: output/rtdetrv3_r18vd_visdrone_p2_query_detail/model_final
+save_dir: output/rtdetrv3_r18vd_visdrone_p2_query_detail
+output_eval: output/rtdetrv3_r18vd_visdrone_p2_query_detail/eval
+
+ResNet:
+  return_idx: [0, 1, 2, 3]
+
+RTDETRV3:
+  exclude_p2_from_neck: True
+
+HybridEncoder:
+  use_p2_guidance: False
+  use_scale_balance: False
+
+RTDETRTransformerv3:
+  use_small_object_query_selection: False
+  use_p2_query_detail: True
+  p2_detail_dim: 64
+  p2_detail_heads: 4
+  p2_detail_points: 4
+  p2_detail_full_size: 16.0
+  p2_detail_max_size: 48.0

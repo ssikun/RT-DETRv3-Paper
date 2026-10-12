@@ -109,6 +109,67 @@ class PPMSDeformableAttention(MSDeformableAttention):
         return output
 
 
+class P2QueryDetailEnhancer(nn.Layer):
+    """Read stride-4 detail for small queries after the final decoder layer."""
+
+    def __init__(self, hidden_dim, p2_channels, detail_dim=64, num_heads=4,
+                 num_points=4, stride=4, full_size=16., max_size=48.):
+        super().__init__()
+        if not 0 < full_size < max_size:
+            raise ValueError('P2 detail sizes must satisfy 0 < full < max')
+        if detail_dim <= 0 or num_heads <= 0 or num_points <= 0:
+            raise ValueError('P2 detail dimensions and sampling must be positive')
+        if detail_dim % num_heads:
+            raise ValueError('P2 detail dimension must divide into heads')
+        self.stride = stride
+        self.full_size = full_size
+        self.max_size = max_size
+        groups = min(32, detail_dim)
+        while detail_dim % groups:
+            groups //= 2
+        self.p2_proj = nn.Sequential(
+            nn.Conv2D(p2_channels, detail_dim, 1, bias_attr=False),
+            nn.GroupNorm(groups, detail_dim), nn.Silu())
+        self.query_proj = nn.Sequential(
+            nn.LayerNorm(hidden_dim), nn.Linear(hidden_dim, detail_dim))
+        self.attention = PPMSDeformableAttention(
+            detail_dim, num_heads, 1, num_points, 1.0)
+        zero = nn.initializer.Constant(0.)
+        self.output_proj = nn.Linear(
+            detail_dim, hidden_dim, weight_attr=ParamAttr(initializer=zero),
+            bias_attr=ParamAttr(initializer=zero))
+
+    def encode_p2(self, p2_feat):
+        with paddle.amp.auto_cast(enable=False):
+            detail = self.p2_proj(p2_feat.astype('float32'))
+        return detail.flatten(2).transpose([0, 2, 1]), detail.shape[2:]
+
+    def scale_gate(self, reference_boxes, spatial_shape):
+        height, width = spatial_shape
+        wh = paddle.clip(reference_boxes[..., 2:].astype('float32'), min=0.)
+        size = paddle.sqrt(wh[..., 0] * wh[..., 1] *
+                           (height * width * self.stride**2))
+        return paddle.clip(
+            (self.max_size - size) / (self.max_size - self.full_size),
+            min=0., max=1.).unsqueeze(-1)
+
+    def forward(self, query, reference_boxes, p2_memory, spatial_shape):
+        # Geometry controls sampling and scale without optimizing the gate.
+        reference_boxes = reference_boxes.detach().astype('float32')
+        with paddle.amp.auto_cast(enable=False):
+            query_fp32 = query.astype('float32')
+            gate = self.scale_gate(reference_boxes, spatial_shape)
+            detail = self.attention(
+                self.query_proj(query_fp32), reference_boxes.unsqueeze(2),
+                p2_memory, [list(spatial_shape)], [0])
+            residual = gate * self.output_proj(detail)
+            self.last_gate = gate.detach()
+            self.last_residual_ratio = (
+                residual.square().mean().sqrt() /
+                (query_fp32.square().mean().sqrt() + 1e-6)).detach()
+        return query + residual.astype(query.dtype)
+
+
 class TransformerDecoderLayer(nn.Layer):
     def __init__(self,
                  d_model=256,
@@ -219,7 +280,10 @@ class TransformerDecoder(nn.Layer):
                 query_pos_head,
                 attn_mask=None,
                 memory_mask=None,
-                query_pos_head_inv_sig=False):
+                query_pos_head_inv_sig=False,
+                p2_detail_enhancer=None,
+                p2_memory=None,
+                p2_spatial_shape=None):
         output = tgt
         dec_out_bboxes = []
         dec_out_logits = []
@@ -235,6 +299,12 @@ class TransformerDecoder(nn.Layer):
             output = layer(output, ref_points_input, memory,
                            memory_spatial_shapes, memory_level_start_index,
                            attn_mask, memory_mask, query_pos_embed)
+
+            if p2_detail_enhancer is not None and i == self.num_layers - 1:
+                detail_boxes = F.sigmoid(
+                    bbox_head[i](output) + inverse_sigmoid(ref_points_detach))
+                output = p2_detail_enhancer(
+                    output, detail_boxes, p2_memory, p2_spatial_shape)
 
             inter_ref_bbox = F.sigmoid(bbox_head[i](output) + inverse_sigmoid(
                 ref_points_detach))
@@ -295,7 +365,15 @@ class RTDETRTransformerv3(nn.Layer):
                  soqs_lambda=0.05,
                  soqs_tau=0.04,
                  soqs_level_weights=[1.0, 0.5, 0.25],
-                 soqs_apply_all_groups=False):
+                 soqs_apply_all_groups=False,
+                 use_p2_query_detail=False,
+                 p2_feat_channels=None,
+                 p2_detail_dim=64,
+                 p2_detail_heads=4,
+                 p2_detail_points=4,
+                 p2_detail_stride=4,
+                 p2_detail_full_size=16.,
+                 p2_detail_max_size=48.):
         super(RTDETRTransformerv3, self).__init__()
         assert position_embed_type in ['sine', 'learned'], \
             f'ValueError: position_embed_type not supported {position_embed_type}!'
@@ -319,6 +397,7 @@ class RTDETRTransformerv3(nn.Layer):
         self.soqs_apply_all_groups = soqs_apply_all_groups
         self.num_decoder_layers = num_decoder_layers
         self.eval_size = eval_size
+        self.use_p2_query_detail = use_p2_query_detail
 
         self.num_noises = num_noises
         self.num_noise_denoising = num_noise_denoising
@@ -397,6 +476,16 @@ class RTDETRTransformerv3(nn.Layer):
         ])
 
         self._reset_parameters()
+        self.p2_query_detail = None
+        if self.use_p2_query_detail:
+            if p2_feat_channels is None:
+                raise ValueError('P2 query detail requires a stride-4 input')
+            if self.decoder.eval_idx != num_decoder_layers - 1:
+                raise ValueError('P2 query detail requires the final eval layer')
+            self.p2_query_detail = P2QueryDetailEnhancer(
+                hidden_dim, p2_feat_channels, p2_detail_dim, p2_detail_heads,
+                p2_detail_points, p2_detail_stride, p2_detail_full_size,
+                p2_detail_max_size)
 
     def _reset_parameters(self):
         # class and bbox head init
@@ -431,8 +520,16 @@ class RTDETRTransformerv3(nn.Layer):
             self.anchors, self.valid_mask = self._generate_anchors()
 
     @classmethod
-    def from_config(cls, cfg, input_shape):
-        return {'backbone_feat_channels': [i.channels for i in input_shape]}
+    def from_config(cls, cfg, input_shape, p2_input_shape=None):
+        kwargs = {'backbone_feat_channels': [i.channels for i in input_shape]}
+        if cfg.get('use_p2_query_detail', False):
+            if p2_input_shape is None or p2_input_shape.stride != 4:
+                raise ValueError('P2 query detail requires a stride-4 input')
+            kwargs.update({
+                'p2_feat_channels': p2_input_shape.channels,
+                'p2_detail_stride': p2_input_shape.stride
+            })
+        return kwargs
 
     def _build_input_proj_layer(self, backbone_feat_channels):
         self.input_proj = nn.LayerList()
@@ -492,10 +589,17 @@ class RTDETRTransformerv3(nn.Layer):
         level_start_index.pop()
         return (feat_flatten, spatial_shapes, level_start_index)
 
-    def forward(self, feats, pad_mask=None, gt_meta=None, is_teacher=False):
+    def forward(self, feats, pad_mask=None, gt_meta=None, is_teacher=False,
+                p2_feat=None):
         # input projection and embedding
         (memory, spatial_shapes,
          level_start_index) = self._get_encoder_input(feats)
+        p2_memory, p2_spatial_shape = None, None
+        if self.use_p2_query_detail:
+            if p2_feat is None:
+                raise ValueError('P2 query detail is enabled but P2 is missing')
+            p2_memory, p2_spatial_shape = \
+                self.p2_query_detail.encode_p2(p2_feat)
 
         # prepare denoising training
         if self.training:
@@ -560,7 +664,10 @@ class RTDETRTransformerv3(nn.Layer):
             self.query_pos_head,
             attn_mask=attn_masks,
             memory_mask=None,
-            query_pos_head_inv_sig=self.query_pos_head_inv_sig)
+            query_pos_head_inv_sig=self.query_pos_head_inv_sig,
+            p2_detail_enhancer=self.p2_query_detail,
+            p2_memory=p2_memory,
+            p2_spatial_shape=p2_spatial_shape)
         return (out_bboxes, out_logits, enc_topk_bboxes, enc_topk_logits,
                 dn_metas)
 
