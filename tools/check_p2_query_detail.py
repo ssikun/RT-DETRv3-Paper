@@ -68,6 +68,12 @@ def check_decoder():
         detail_outputs = enhanced(feats, p2_feat=p2)
     for original, candidate in zip(base_outputs[:4], detail_outputs[:4]):
         assert paddle.allclose(original, candidate, atol=1e-6, rtol=1e-6)
+    enhanced.use_p2_query_detail = False
+    with paddle.no_grad():
+        disabled_outputs = enhanced(feats)
+    for original, candidate in zip(base_outputs[:4], disabled_outputs[:4]):
+        assert paddle.allclose(original, candidate, atol=1e-6, rtol=1e-6)
+    enhanced.use_p2_query_detail = True
 
     nn.initializer.XavierUniform()(enhanced.p2_query_detail.output_proj.weight)
     baseline.decoder.train()

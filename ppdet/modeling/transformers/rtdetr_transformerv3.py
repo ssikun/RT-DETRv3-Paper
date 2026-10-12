@@ -665,7 +665,8 @@ class RTDETRTransformerv3(nn.Layer):
             attn_mask=attn_masks,
             memory_mask=None,
             query_pos_head_inv_sig=self.query_pos_head_inv_sig,
-            p2_detail_enhancer=self.p2_query_detail,
+            p2_detail_enhancer=self.p2_query_detail
+            if self.use_p2_query_detail else None,
             p2_memory=p2_memory,
             p2_spatial_shape=p2_spatial_shape)
         return (out_bboxes, out_logits, enc_topk_bboxes, enc_topk_logits,
