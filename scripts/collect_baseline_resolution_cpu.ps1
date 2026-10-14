@@ -15,6 +15,8 @@ $logPath = Join-Path $BackupDir 'collection.log'
 $statusPath = Join-Path $BackupDir 'collection.status.json'
 
 try {
+    @{ stage = 'waiting'; started = (Get-Date).ToString('o') } |
+        ConvertTo-Json | Set-Content -LiteralPath $statusPath
     $deadline = (Get-Date).AddHours(14)
     $finished = $false
     while ((Get-Date) -lt $deadline) {
@@ -32,6 +34,9 @@ try {
         Start-Sleep -Seconds 30
     }
     if (-not $finished) { throw 'Result collection timed out before a terminal status appeared.' }
+
+    @{ stage = 'downloading'; remote_exit_code = $remoteExit } |
+        ConvertTo-Json | Set-Content -LiteralPath $statusPath
 
     $resultDir = Join-Path $BackupDir 'results'
     New-Item -ItemType Directory -Path $resultDir -Force | Out-Null
@@ -59,13 +64,14 @@ try {
     foreach ($line in ($remoteManifest -split "`r?`n")) {
         if ($line -match '^([0-9a-f]{64})  (.+)$') {
             $expected = $Matches[1]
-            $relative = $Matches[2].TrimStart('.', '/')
+            $relative = $Matches[2]
+            if ($relative.StartsWith('./')) { $relative = $relative.Substring(2) }
             $path = Join-Path $resultDir $relative
             $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
             if ($actual -ne $expected) { throw "Result checksum mismatch: $relative" }
         }
     }
-    $summary = @{ remote_exit_code = $remoteExit; verified = $true; completed = (Get-Date).ToString('o') }
+    $summary = @{ stage = 'complete'; remote_exit_code = $remoteExit; verified = $true; completed = (Get-Date).ToString('o') }
     if ($remoteExit -eq 0) {
         $baseline = Get-Content -LiteralPath (Join-Path $resultDir 'eval_640\metrics.json') -Raw | ConvertFrom-Json
         $larger = Get-Content -LiteralPath (Join-Path $resultDir 'eval_960\metrics.json') -Raw | ConvertFrom-Json
@@ -82,7 +88,7 @@ try {
     }
     $summary | ConvertTo-Json | Set-Content -LiteralPath $statusPath
 } catch {
-    @{ verified = $false; error = $_.Exception.Message; completed = (Get-Date).ToString('o') } |
+    @{ stage = 'error'; verified = $false; error = $_.Exception.Message; completed = (Get-Date).ToString('o') } |
         ConvertTo-Json | Set-Content -LiteralPath $statusPath
     Add-Content -LiteralPath $logPath -Value $_.Exception.Message
     exit 1
