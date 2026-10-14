@@ -1,0 +1,20 @@
+_BASE_: ['rtdetrv3_r18vd_visdrone_baseline.yml']
+
+use_gpu: False
+use_ema: False
+worker_num: 0
+eval_size: [960, 960]
+weights: eval_weights/baseline40_model_final.pdparams
+
+EvalReader:
+  sample_transforms:
+    - Decode: {}
+    - Resize: {target_size: [960, 960], keep_ratio: False, interp: 2}
+    - NormalizeImage: {mean: [0., 0., 0.], std: [1., 1., 1.], norm_type: none}
+    - Permute: {}
+  batch_size: 1
+  use_shared_memory: False
+
+TestReader:
+  inputs_def:
+    image_shape: [3, 960, 960]
